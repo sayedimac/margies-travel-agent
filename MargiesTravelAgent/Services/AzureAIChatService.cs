@@ -72,7 +72,7 @@ public class AzureAIChatService
             return new ChatResponse
             {
                 Success = false,
-                ErrorMessage = ex.Message
+                ErrorMessage = "An error occurred while processing your request. Please try again."
             };
         }
     }

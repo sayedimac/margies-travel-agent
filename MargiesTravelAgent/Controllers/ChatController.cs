@@ -6,6 +6,11 @@ namespace MargiesTravelAgent.Controllers;
 
 public class ChatController : Controller
 {
+    private static readonly HashSet<string> AllowedImageMediaTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/bmp"
+    };
+
     private readonly AzureAIChatService _chatService;
 
     public ChatController(AzureAIChatService chatService)
@@ -19,6 +24,7 @@ public class ChatController : Controller
     }
 
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> Send([FromForm] ChatRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Message))
@@ -31,10 +37,16 @@ public class ChatController : Controller
 
         if (request.Image is { Length: > 0 })
         {
+            var contentType = request.Image.ContentType;
+            if (!AllowedImageMediaTypes.Contains(contentType))
+            {
+                return BadRequest(new ChatResponse { Success = false, ErrorMessage = "Only image files are supported (JPEG, PNG, GIF, WebP, BMP)." });
+            }
+
             using var ms = new MemoryStream();
             await request.Image.CopyToAsync(ms, cancellationToken);
             imageBytes = ms.ToArray();
-            imageMediaType = request.Image.ContentType;
+            imageMediaType = contentType;
         }
 
         var result = await _chatService.SendMessageAsync(
