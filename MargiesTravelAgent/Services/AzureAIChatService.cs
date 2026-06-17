@@ -1,29 +1,49 @@
-#pragma warning disable OPENAI001
-using Azure.AI.Extensions.OpenAI;
 using Azure.AI.Projects;
+using Azure.AI.Extensions.OpenAI;
 using Azure.Identity;
+using Azure.Search.Documents;
+using Azure.Search.Documents.Models;
 using Microsoft.Extensions.Options;
 using MargiesTravelAgent.Models;
 using OpenAI.Responses;
+using System.Collections;
+
+#pragma warning disable OPENAI001
 
 namespace MargiesTravelAgent.Services;
 
 public class AzureAIChatService
 {
     private readonly ProjectResponsesClient _responsesClient;
+    private readonly SearchClient _searchClient;
     private readonly ILogger<AzureAIChatService> _logger;
+
+    private const string SystemPrompt = """
+        You are a helpful travel assistant for Margie's Travel, a travel agency specializing in worldwide travel packages.
+        You help customers find information about destinations, hotels, tours, and travel advice.
+        Use the provided context from the knowledge base to answer questions accurately.
+        When answering, reference specific details from the context where relevant.
+        If the context doesn't contain the answer, say you don't have that specific information but offer to help with general travel questions.
+        """;
 
     public AzureAIChatService(IOptions<AzureAISettings> settings, ILogger<AzureAIChatService> logger)
     {
         _logger = logger;
         var options = settings.Value;
 
+        var credential = new DefaultAzureCredential();
+
         var projectClient = new AIProjectClient(
             new Uri(options.ProjectEndpoint),
-            new DefaultAzureCredential());
+            credential);
 
         _responsesClient = projectClient.ProjectOpenAIClient
-            .GetProjectResponsesClientForAgentEndpoint(options.AgentName, defaultConversationId: null);
+            .GetProjectResponsesClientForModel(options.ModelDeployment, null);
+
+        _searchClient = new SearchClient(
+            new Uri(options.SearchEndpoint),
+            options.SearchIndexName,
+            credential);
     }
 
     public async Task<ChatResponse> SendMessageAsync(
@@ -35,6 +55,8 @@ public class AzureAIChatService
     {
         try
         {
+            var context = await GetSearchContextAsync(message, cancellationToken);
+
             var contentParts = new List<ResponseContentPart>
             {
                 ResponseContentPart.CreateInputTextPart(message)
@@ -54,8 +76,7 @@ public class AzureAIChatService
 
             var response = await _responsesClient.CreateResponseAsync(
                 inputItems,
-                previousResponseId,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             var responseText = ExtractText(response.Value);
 
@@ -68,7 +89,7 @@ public class AzureAIChatService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error calling Azure AI Foundry");
+            _logger.LogError(ex, "Error calling Azure AI");
             return new ChatResponse
             {
                 Success = false,
@@ -77,20 +98,74 @@ public class AzureAIChatService
         }
     }
 
-    private static string ExtractText(ResponseResult result)
+    private async Task<string> GetSearchContextAsync(string query, CancellationToken cancellationToken)
     {
-        var parts = new System.Text.StringBuilder();
-        foreach (var item in result.OutputItems)
+        try
         {
-            if (item is MessageResponseItem msg)
+            var searchOptions = new SearchOptions
             {
-                foreach (var part in msg.Content)
+                Size = 5,
+                Select = { "snippet", "blob_url" }
+            };
+
+            var results = await _searchClient.SearchAsync<SearchDocument>(query, searchOptions, cancellationToken);
+
+            var context = new System.Text.StringBuilder();
+            await foreach (var result in results.Value.GetResultsAsync())
+            {
+                if (result.Document.TryGetValue("snippet", out var snippet) && snippet is string snippetText)
                 {
-                    if (!string.IsNullOrEmpty(part.Text))
-                        parts.Append(part.Text);
+                    context.AppendLine(snippetText);
+                    context.AppendLine();
                 }
             }
+
+            return context.ToString().Trim();
         }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to retrieve search context, proceeding without it");
+            return string.Empty;
+        }
+    }
+
+    private static string ExtractText(object response)
+    {
+        var parts = new System.Text.StringBuilder();
+
+        var outputItems = response
+            .GetType()
+            .GetProperty("OutputItems")
+            ?.GetValue(response) as IEnumerable;
+
+        if (outputItems is null)
+            return "(No response text)";
+
+        foreach (var item in outputItems)
+        {
+            if (item is null)
+                continue;
+
+            var contentParts = item
+                .GetType()
+                .GetProperty("Content")
+                ?.GetValue(item) as IEnumerable;
+
+            if (contentParts is null)
+                continue;
+
+            foreach (var part in contentParts)
+            {
+                var text = part?
+                    .GetType()
+                    .GetProperty("Text")
+                    ?.GetValue(part) as string;
+
+                if (!string.IsNullOrEmpty(text))
+                    parts.Append(text);
+            }
+        }
+
         return parts.Length > 0 ? parts.ToString() : "(No response text)";
     }
 }

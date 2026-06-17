@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="MargiesTravelAgent.Tests/MargiesTravelAgent.Tests.csproj" />
+  <Project Path="MargiesTravelAgent/MargiesTravelAgent.csproj" />
+</Solution>

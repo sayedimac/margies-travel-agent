@@ -128,10 +128,10 @@
         const hasImage = imageInput.files && imageInput.files[0];
         appendUserMessage(message, hasImage ? imagePreview.src : null);
 
+        const formData = new FormData(chatForm);
+
         // Disable input while waiting
         setLoading(true);
-
-        const formData = new FormData(chatForm);
 
         try {
             const response = await fetch('/Chat/Send', {
